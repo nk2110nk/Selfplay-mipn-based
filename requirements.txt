@@ -1,0 +1,9 @@
+torch==2.8.0
+numpy==1.26.4
+gym==0.26.2
+negmas==0.8.8
+pandas==1.5.3
+scikit-learn==1.6.1
+sklearn==0.0
+setuptools==70.3.0
+pytest==8.4.2
