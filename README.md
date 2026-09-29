@@ -133,20 +133,22 @@ actorは公開実装のshared encoderをMultiDiscrete向けに適応し、各iss
 
 entropy coefficientは固定値として`--entropy-coefficient`で設定します。checkpointにはactor、critics、target critics、optimizers、replay buffer、乱数状態を保存します。
 
-`--auto-entropy`を指定すると、公開実装のintent/price別entropy係数を一般化した「action head別alpha」を自動調整します。目標entropyは各状態で有効なcategory数から計算し、`--target-entropy-ratio`で比率を変更できます。固定alphaが論文既定、auto entropyはSL warm startを持たない本適応版で早期collapseを抑えるための選択肢です。
+`--auto-entropy`を指定すると、公開実装のintent/price別entropy係数を一般化した「action head別alpha」を自動調整します。目標entropyは各状態で有効なcategory数から計算し、`--target-entropy-ratio`で比率を変更できます。`--target-entropy-final-ratio`と`--entropy-anneal-steps`を指定すると、探索量を学習進行に合わせて線形に減少できます。固定alphaが論文既定、auto entropyはSL warm startを持たない本適応版で早期collapseを抑えるための選択肢です。
+
+`--canonical-accept-action`でaccept時の無意味なbid成分をcritic入力から除きます。`--hierarchical-entropy`では、accept/reject headのentropyは常に保ち、bid headのentropyはreject確率で重み付けします。これにより、acceptする行動に存在しない「bidの多様性」を報酬しません。
 
 ## Opponent PoolとPFSP
 
 poolは最初にBoulware、Linear、Conceder、Atlas3で初期化されます。その後、定期評価で優位になった学習方策をsnapshotとして追加します。公開実装のthree-source samplingをSLなしへ適応し、各slotを既定でcurrent self-play 20%、scripted 30%、historical snapshot 50%から選びます。利用できないsourceの確率は残りへ正規化します。
 
-PFSPは公開実装の式`p(A) ∝ P[A dominates M]`に従います。本3者SAOP版ではdominance確率を次の複合推定値で近似します。
+PFSPは公開実装の式`p(A) ∝ P[A dominates M]`を「学習エージェントから見た難しさ」として近似します。相手の効用関数は非公開とし、合意の有無、自分のutility、交渉長だけを使います。
 
 ```text
-empirical = (opponent_wins + 0.5 * draws + 0.5) / (matches + 1)
-score_signal = sigmoid(opponent_negotiation_score - learner_negotiation_score)
-difficulty = ((1 - agreement_rate) + min(length / 80, 1)
-              + max(0, 3 - social_welfare) / 3) / 3
-P_dominates = 0.5 * empirical + 0.3 * score_signal + 0.2 * difficulty
+difficulty = 0.45 * (1 - agreement_rate)
+           + 0.40 * (1 - clip(agent_utility, 0, 1))
+           + 0.15 * clip(negotiation_length / 80, 0, 1)
+confidence = matches / (matches + 10)
+P_dominates = confidence * difficulty + (1 - confidence) * 0.5
 PFSP(i) ∝ exp(pfsp_alpha * P_dominates(i))
 ```
 
@@ -157,10 +159,11 @@ PFSP(i) ∝ exp(pfsp_alpha * P_dominates(i))
 ```text
 Sc = (1 - min(agreement_rate, 1 - epsilon))^(-utility)
      + score_length_weight * negotiation_length
-     + score_welfare_weight * social_welfare
 ```
 
-既定値は`epsilon=0.01`、length weight=`-0.005`、welfare weight=`0.1`です。snapshot追加ではagent utilityを先に比較し、差が`dominance_tolerance=0.01`以内ならこのscoreで決めます。
+既定値は`epsilon=0.01`、length weight=`-0.005`です。snapshot追加ではagent utilityを先に比較し、差が`dominance_tolerance=0.01`以内ならこのscoreで決めます。
+
+学習報酬は変更前と同じく合意時の自分のutilityだけです。相手のutilityとsocial welfareはactor観測、critic入力、学習報酬、PFSP、snapshot優位判定のいずれにも使用しません。ベンチマークの学習ログと評価TSVには事後評価用として記録しますが、意思決定には戻しません。
 
 pool上限時はscripted opponentを保持し、snapshotを次の順で削除します: negotiation scoreが低い、選択回数が少ない、追加stepが古い。判定は決定的です。
 

@@ -21,6 +21,12 @@ def test_pfsp_and_fallback():
     probs = pfsp_probabilities([easy, hard], alpha=3, uniform_mix=0.1)
     assert probs[1] > probs[0] and np.isclose(probs.sum(), 1)
     assert dominance_probability(hard) > dominance_probability(easy)
+    hard.opponent_utility = 0.0
+    hard.social_welfare = 0.0
+    unchanged = dominance_probability(hard)
+    hard.opponent_utility = 1.0
+    hard.social_welfare = 3.0
+    assert dominance_probability(hard) == unchanged
     hard.agent_utility = float("nan")
     assert np.allclose(pfsp_probabilities([easy, hard]), [0.5, 0.5])
     assert negotiation_score(1, 0.5, 10, 2) > 0

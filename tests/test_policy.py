@@ -3,7 +3,8 @@ import pytest
 import torch
 
 from dsac import DSAC
-from policy import (action_mask, domain_nvec, padded_observation, quantile_huber_loss,
+from policy import (action_mask, critic_action, domain_nvec, onehot_action,
+                    padded_observation, quantile_huber_loss,
                     select_lower_distribution, style_value, twin_style_value)
 
 
@@ -14,6 +15,11 @@ def test_mask_and_padding():
     assert np.allclose(padded_observation([1, 2, 0.4], 6), [1, 2, 0, 0, 0, 0.4])
     with pytest.raises(ValueError):
         action_mask([2], [3])
+    accepted_a = critic_action(onehot_action(torch.tensor([[0, 0]]), [3, 2]), [3, 2])
+    accepted_b = critic_action(onehot_action(torch.tensor([[2, 0]]), [3, 2]), [3, 2])
+    rejected = critic_action(onehot_action(torch.tensor([[2, 1]]), [3, 2]), [3, 2])
+    assert torch.equal(accepted_a, accepted_b)
+    assert not torch.equal(accepted_a, rejected)
 
 
 def test_quantile_loss_and_styles():
@@ -55,3 +61,13 @@ def test_dsac_update_and_action_mask():
     assert len(restored.replay) == 2
     with pytest.raises(ValueError):
         DSAC(8, [3, 2], quantiles=8, hidden=16).load_state_dict(saved)
+
+
+def test_entropy_schedule():
+    model = DSAC(4, [2, 2], hidden=8, quantiles=4, target_entropy_ratio=0.9,
+                 target_entropy_final_ratio=0.3, entropy_anneal_steps=100)
+    assert model.current_target_entropy_ratio == pytest.approx(0.9)
+    model.update_steps = 50
+    assert model.current_target_entropy_ratio == pytest.approx(0.6)
+    model.update_steps = 200
+    assert model.current_target_entropy_ratio == pytest.approx(0.3)

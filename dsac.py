@@ -6,7 +6,7 @@ import itertools
 import numpy as np
 import torch
 
-from policy import (Actor, QuantileCritic, onehot_action, quantile_huber_loss,
+from policy import (Actor, QuantileCritic, critic_action, onehot_action, quantile_huber_loss,
                     select_lower_distribution, twin_style_value)
 from replay_buffer import ReplayBuffer
 
@@ -16,6 +16,8 @@ class DSAC:
                  critic_lr=1e-4, batch_size=128, buffer_size=1_000_000, tau=0.005,
                  gamma=0.99, entropy_coefficient=0.01, hidden=256, dropout=0.1,
                  auto_entropy=False, target_entropy_ratio=0.98, gradient_clip=1.0,
+                 target_entropy_final_ratio=None, entropy_anneal_steps=0,
+                 canonical_accept_action=True, hierarchical_entropy=True,
                  policy_update_frequency=2, gumbel_temperature=1.0,
                  training_style="neutral", aggressive_quantile=0.8,
                  conservative_quantile=0.2, risk_weight=0.1):
@@ -27,6 +29,11 @@ class DSAC:
         self.gamma = gamma
         self.auto_entropy = bool(auto_entropy)
         self.target_entropy_ratio = float(target_entropy_ratio)
+        self.target_entropy_final_ratio = float(target_entropy_final_ratio if target_entropy_final_ratio is not None
+                                                else target_entropy_ratio)
+        self.entropy_anneal_steps = int(entropy_anneal_steps)
+        self.canonical_accept_action = bool(canonical_accept_action)
+        self.hierarchical_entropy = bool(hierarchical_entropy)
         self.gradient_clip = float(gradient_clip)
         self.policy_update_frequency = int(policy_update_frequency)
         self.gumbel_temperature = float(gumbel_temperature)
@@ -59,6 +66,17 @@ class DSAC:
     def alpha(self):
         values = self.log_alpha.detach().exp()
         return float(values.mean().item())
+
+    @property
+    def current_target_entropy_ratio(self):
+        if self.entropy_anneal_steps <= 0:
+            return self.target_entropy_final_ratio
+        progress = min(self.update_steps / self.entropy_anneal_steps, 1.0)
+        return self.target_entropy_ratio + progress * (
+            self.target_entropy_final_ratio - self.target_entropy_ratio)
+
+    def _critic_action(self, action):
+        return critic_action(action, self.nvec) if self.canonical_accept_action else action
 
     @staticmethod
     def _resolve_device(requested):
@@ -100,7 +118,7 @@ class DSAC:
         if joint_size <= max(1, candidates):
             for key in itertools.product(*valid_indices):
                 tensor = torch.as_tensor(key, device=self.device).unsqueeze(0)
-                options.append((key, onehot_action(tensor, self.nvec)))
+                options.append((key, self._critic_action(onehot_action(tensor, self.nvec))))
                 seen.add(key)
         else:
             for _ in range(max(1, candidates)):
@@ -108,10 +126,11 @@ class DSAC:
                 key = tuple(action.squeeze(0).tolist())
                 if key not in seen:
                     seen.add(key)
-                    options.append((key, onehot))
+                    options.append((key, self._critic_action(onehot)))
         greedy = tuple(int(x.argmax(-1).item()) for x in logits)
         if greedy not in seen:
-            onehot = onehot_action(torch.as_tensor(greedy, device=self.device).unsqueeze(0), self.nvec)
+            onehot = self._critic_action(
+                onehot_action(torch.as_tensor(greedy, device=self.device).unsqueeze(0), self.nvec))
             options.append((greedy, onehot))
         best = None
         for key, onehot in options:
@@ -132,10 +151,11 @@ class DSAC:
         obs, actions, rewards, next_obs, dones, masks, next_masks = self.replay.sample(self.batch_size, self.device)
         with torch.no_grad():
             _, next_onehot, _ = self.actor.sample(next_obs, next_masks)
+            next_onehot = self._critic_action(next_onehot)
             q_next = select_lower_distribution(self.targets[0](next_obs, next_onehot), self.targets[1](next_obs, next_onehot))
             # Alpha-Nego Algorithm 2 uses an entropy-free distributional Bellman target.
             target = rewards[:, None] + self.gamma * (1 - dones[:, None]) * q_next
-        onehot = onehot_action(actions, self.nvec)
+        onehot = self._critic_action(onehot_action(actions, self.nvec))
         critic_losses = []
         for critic, optimizer in zip(self.critics, self.critic_optimizers):
             loss = quantile_huber_loss(critic(obs, onehot), target)
@@ -145,11 +165,12 @@ class DSAC:
             optimizer.step()
             critic_losses.append(loss.item())
         actor_loss = torch.zeros((), device=self.device)
-        entropy = self.actor.entropy(obs, masks)
+        entropy = self.actor.entropy(obs, masks, hierarchical=self.hierarchical_entropy)
         alpha_loss = torch.zeros((), device=self.device)
         if self.update_steps % self.policy_update_frequency == 0:
             _, policy_action, _ = self.actor.sample(
                 obs, masks, relaxed=True, temperature=self.gumbel_temperature)
+            policy_action = self._critic_action(policy_action)
             for critic in self.critics:
                 critic.requires_grad_(False)
             q1, q2 = (critic(obs, policy_action) for critic in self.critics)
@@ -166,7 +187,12 @@ class DSAC:
 
             if self.auto_entropy:
                 valid_counts = masks.sum(-1).clamp_min(1).to(entropy.dtype)
-                target_entropy = self.target_entropy_ratio * valid_counts.log()
+                target_entropy = self.current_target_entropy_ratio * valid_counts.log()
+                distributions = self.actor.distributions(obs, masks)
+                if self.hierarchical_entropy and len(distributions) > 1:
+                    reject_probability = distributions[-1].probs[..., 1:2].detach()
+                    target_entropy = torch.cat((target_entropy[..., :-1] * reject_probability,
+                                                target_entropy[..., -1:]), dim=-1)
                 alpha_loss = (self.log_alpha.exp().view(1, -1) *
                               (entropy.detach() - target_entropy)).sum(-1).mean()
                 self.alpha_optimizer.zero_grad(set_to_none=True)
@@ -178,7 +204,8 @@ class DSAC:
                     target_param.lerp_(source, self.tau)
         return {"actor_loss": actor_loss.item(), "critic_loss": float(np.mean(critic_losses)),
                 "entropy": float(entropy.detach().sum(-1).mean().item()), "alpha": self.alpha,
-                "alpha_loss": alpha_loss.item()}
+                "alpha_loss": alpha_loss.item(),
+                "target_entropy_ratio": self.current_target_entropy_ratio}
 
     def state_dict(self):
         return {"actor": self.actor.state_dict(), "critics": [c.state_dict() for c in self.critics],
@@ -192,6 +219,10 @@ class DSAC:
                 "action_nvec": self.nvec, "quantiles": self.quantiles, "hidden": self.hidden,
                 "dropout": self.dropout, "batch_size": self.batch_size, "tau": self.tau,
                 "gamma": self.gamma, "target_entropy_ratio": self.target_entropy_ratio,
+                "target_entropy_final_ratio": self.target_entropy_final_ratio,
+                "entropy_anneal_steps": self.entropy_anneal_steps,
+                "canonical_accept_action": self.canonical_accept_action,
+                "hierarchical_entropy": self.hierarchical_entropy,
                 "gradient_clip": self.gradient_clip,
                 "policy_update_frequency": self.policy_update_frequency,
                 "gumbel_temperature": self.gumbel_temperature,

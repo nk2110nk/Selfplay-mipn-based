@@ -79,8 +79,14 @@ class Actor(nn.Module):
             log_probs.append(dist.log_prob(index))
         return torch.stack(actions, -1), torch.cat(onehots, -1), torch.stack(log_probs, -1).sum(-1)
 
-    def entropy(self, obs, mask):
-        return torch.stack([dist.entropy() for dist in self.distributions(obs, mask)], dim=-1)
+    def entropy(self, obs, mask, *, hierarchical=True):
+        """Per-head entropy; bid-head entropy matters only when the policy rejects."""
+        distributions = self.distributions(obs, mask)
+        entropy = torch.stack([dist.entropy() for dist in distributions], dim=-1)
+        if hierarchical and len(distributions) > 1:
+            reject_probability = distributions[-1].probs[..., 1:2]
+            entropy = torch.cat((entropy[..., :-1] * reject_probability, entropy[..., -1:]), dim=-1)
+        return entropy
 
 
 class QuantileCritic(nn.Module):
@@ -100,6 +106,15 @@ class QuantileCritic(nn.Module):
 
 def onehot_action(actions, nvec):
     return torch.cat([F.one_hot(actions[..., i].long(), n).float() for i, n in enumerate(nvec)], -1)
+
+
+def critic_action(action_onehot, nvec):
+    """Remove meaningless issue values from accept actions before critic input."""
+    parts = torch.split(action_onehot, tuple(map(int, nvec)), dim=-1)
+    if len(parts) == 1:
+        return action_onehot
+    reject = parts[-1][..., 1:2]
+    return torch.cat(tuple(part * reject for part in parts[:-1]) + (parts[-1],), dim=-1)
 
 
 def quantile_huber_loss(prediction, target, kappa=1.0):

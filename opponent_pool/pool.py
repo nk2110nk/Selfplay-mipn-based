@@ -38,26 +38,18 @@ class PoolEntry:
                dominance_tolerance=0.01):
         previous_matches = self.matches
         self.matches += 1
-        agent_utility = float(metrics["agent_utility"])
-        opponent_utility = float(metrics["opponent_utility"])
-        if abs(opponent_utility - agent_utility) <= dominance_tolerance:
-            self.draws += 1
-        elif opponent_utility > agent_utility:
-            self.wins += 1
-        else:
-            self.losses += 1
         for field_name, value in metrics.items():
-            if field_name in ("agreement_rate", "agent_utility", "opponent_utility", "social_welfare", "negotiation_length"):
+            if field_name in ("agreement_rate", "agent_utility", "negotiation_length"):
                 # Official Alpha-Nego uses alpha=0.1 moving opponent statistics.
                 updated = float(value) if previous_matches == 0 else 0.9 * getattr(self, field_name) + 0.1 * float(value)
                 setattr(self, field_name, updated)
-        self.negotiation_score = negotiation_score(self.agreement_rate, self.opponent_utility,
-                                                    self.negotiation_length, self.social_welfare,
-                                                    length_weight=length_weight, welfare_weight=welfare_weight)
-        self.learner_negotiation_score = negotiation_score(
+        self.negotiation_score = negotiation_score(
             self.agreement_rate, self.agent_utility, self.negotiation_length,
-            self.social_welfare, length_weight=length_weight, welfare_weight=welfare_weight)
-        self.evaluation_history.append({"step": int(step), **{k: float(v) for k, v in metrics.items()}})
+            0.0, length_weight=length_weight, welfare_weight=0.0)
+        self.learner_negotiation_score = self.negotiation_score
+        public_metrics = {key: float(metrics[key]) for key in
+                          ("agreement_rate", "agent_utility", "negotiation_length")}
+        self.evaluation_history.append({"step": int(step), **public_metrics})
         self.evaluation_history = self.evaluation_history[-50:]
 
 

@@ -44,7 +44,7 @@ def evaluate_pool(model, pool, domains, episodes, model_dir, *, seed, device,
             }
             metrics["negotiation_score"] = negotiation_score(
                 metrics["agreement_rate"], metrics["agent_utility"], metrics["negotiation_length"],
-                metrics["social_welfare"], length_weight=length_weight, welfare_weight=welfare_weight)
+                0.0, length_weight=length_weight, welfare_weight=0.0)
             overall.append(metrics)
     finally:
         random.setstate(states[0])

@@ -7,26 +7,27 @@ import numpy as np
 
 def negotiation_score(agreement_rate, utility, length, welfare, *, length_weight=-0.005,
                       welfare_weight=0.1, epsilon=0.01):
+    """Learner score based only on observable outcomes.
+
+    The welfare arguments remain in the signature so existing checkpoints and
+    result writers stay compatible; they do not affect the score.
+    """
     agreement = min(max(float(agreement_rate), 0.0), 1.0 - epsilon)
-    return (1.0 - agreement) ** (-float(utility)) + length_weight * float(length) + welfare_weight * float(welfare)
+    return (1.0 - agreement) ** (-float(utility)) + length_weight * float(length)
 
 
 def dominance_probability(entry):
-    """Estimate P[opponent dominates learner] from outcomes and negotiation metrics."""
-    metrics = (entry.agreement_rate, entry.agent_utility, entry.opponent_utility,
-               entry.social_welfare, entry.negotiation_length,
-               entry.negotiation_score, entry.learner_negotiation_score)
+    """Estimate opponent difficulty from learner-observable outcomes only."""
+    metrics = (entry.agreement_rate, entry.agent_utility, entry.negotiation_length)
     if not np.all(np.isfinite(metrics)):
         return float("nan")
     if entry.matches == 0:
         return 0.5
-    empirical = (entry.wins + 0.5 * entry.draws + 0.5) / (entry.matches + 1.0)
-    score_gap = float(entry.negotiation_score - entry.learner_negotiation_score)
-    score_signal = 1.0 / (1.0 + math.exp(-np.clip(score_gap, -40.0, 40.0)))
-    # Deal difficulty retains the multi-objective information required by the SAOP adaptation.
-    difficulty = (1.0 - entry.agreement_rate + min(entry.negotiation_length / 80.0, 1.0) +
-                  max(0.0, 3.0 - entry.social_welfare) / 3.0) / 3.0
-    return float(np.clip(0.5 * empirical + 0.3 * score_signal + 0.2 * difficulty, 0.0, 1.0))
+    difficulty = (0.45 * (1.0 - np.clip(entry.agreement_rate, 0.0, 1.0)) +
+                  0.40 * (1.0 - np.clip(entry.agent_utility, 0.0, 1.0)) +
+                  0.15 * np.clip(entry.negotiation_length / 80.0, 0.0, 1.0))
+    confidence = entry.matches / (entry.matches + 10.0)
+    return float(np.clip(confidence * difficulty + (1.0 - confidence) * 0.5, 0.0, 1.0))
 
 
 def pfsp_probabilities(entries, alpha=1.0, uniform_mix=0.1):

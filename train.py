@@ -23,6 +23,7 @@ from results import row_from_info, write_results
 
 
 LOG_FIELDS = ("global_step", "episode", "actor_loss", "critic_loss", "entropy", "alpha", "alpha_loss",
+              "target_entropy_ratio",
               "replay_buffer_size", "agreement_rate", "agent_utility", "opponent1_utility",
               "opponent2_utility", "social_welfare", "negotiation_length", "opponent1_id",
               "opponent2_id", "opponent1_probability", "opponent2_probability", "pool_size", "event")
@@ -125,6 +126,10 @@ def parse_args(argv=None):
     parser.add_argument("--entropy-coefficient", type=float, default=0.01)
     parser.add_argument("--auto-entropy", action="store_true")
     parser.add_argument("--target-entropy-ratio", type=float, default=0.98)
+    parser.add_argument("--target-entropy-final-ratio", type=float)
+    parser.add_argument("--entropy-anneal-steps", type=int, default=0)
+    parser.add_argument("--canonical-accept-action", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--hierarchical-entropy", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--hidden", type=int, default=256)
     parser.add_argument("--dropout", type=float, default=0.1)
     parser.add_argument("--gradient-clip", type=float, default=1.0)
@@ -148,7 +153,8 @@ def parse_args(argv=None):
     parser.add_argument("--scripted-probability", type=float, default=0.3)
     parser.add_argument("--snapshot-probability", type=float, default=0.5)
     parser.add_argument("--score-length-weight", type=float, default=-0.005)
-    parser.add_argument("--score-welfare-weight", type=float, default=0.1)
+    parser.add_argument("--score-welfare-weight", type=float, default=0.0,
+                        help=argparse.SUPPRESS)  # Old command/checkpoint compatibility only.
     args = parser.parse_args(argv)
     if args.model_type == "expert" and len(args.issue) != 1:
         parser.error("Expert mode needs exactly one issue")
@@ -156,7 +162,10 @@ def parse_args(argv=None):
         parser.error("Positive timesteps/envs/batch size and at least two quantiles required")
     if args.max_pool_size < 5 or not 0 <= args.uniform_mix <= 1:
         parser.error("Pool needs room for four scripted opponents, one snapshot and a valid uniform mix")
+    final_entropy_ratio = (args.target_entropy_ratio if args.target_entropy_final_ratio is None
+                           else args.target_entropy_final_ratio)
     if (args.entropy_coefficient <= 0 or not 0 < args.target_entropy_ratio <= 1 or
+            not 0 < final_entropy_ratio <= 1 or args.entropy_anneal_steps < 0 or
             args.gradient_clip <= 0 or args.policy_update_frequency < 1 or
             args.gumbel_temperature <= 0 or not 0 <= args.dropout < 1):
         parser.error("Invalid DSAC entropy, update, clipping, temperature, or dropout setting")
@@ -193,6 +202,10 @@ def train(args):
                  entropy_coefficient=config["entropy_coefficient"], hidden=config["hidden"],
                  dropout=config.get("dropout", 0.1), auto_entropy=config.get("auto_entropy", False),
                  target_entropy_ratio=config.get("target_entropy_ratio", 0.98),
+                 target_entropy_final_ratio=config.get("target_entropy_final_ratio"),
+                 entropy_anneal_steps=config.get("entropy_anneal_steps", 0),
+                 canonical_accept_action=config.get("canonical_accept_action", False),
+                 hierarchical_entropy=config.get("hierarchical_entropy", False),
                  gradient_clip=config.get("gradient_clip", 1.0),
                  policy_update_frequency=config.get("policy_update_frequency", 2),
                  gumbel_temperature=config.get("gumbel_temperature", 1.0),
@@ -242,7 +255,7 @@ def train(args):
 
     workers = [new_episode() for _ in range(args.num_envs)]
     last_loss = {"actor_loss": "", "critic_loss": "", "entropy": "", "alpha": model.alpha,
-                 "alpha_loss": ""}
+                 "alpha_loss": "", "target_entropy_ratio": model.current_target_entropy_ratio}
     while global_step < args.total_timesteps:
         for index, worker in enumerate(workers):
             if global_step >= args.total_timesteps:
@@ -263,11 +276,9 @@ def train(args):
             if done:
                 episode += 1
                 first, second = worker["opponents"]
-                for slot, entry in enumerate((first, second)):
+                for entry in (first, second):
                     entry.record({"agreement_rate": float(info["agreement"] is not None),
                                   "agent_utility": info["my_util"],
-                                  "opponent_utility": info[f"opp_util{slot+1}"],
-                                  "social_welfare": info["social"],
                                   "negotiation_length": info["step"]}, global_step,
                                  length_weight=pool.length_weight, welfare_weight=pool.welfare_weight)
                 append_log(model_dir / "training_log.csv", {
