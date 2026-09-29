@@ -46,6 +46,16 @@ pip install -r requirements.txt
 
 ## 学習
 
+`-a/--agents`で指定したエージェントだけが初期scripted poolに入ります。名前は大文字小文字を区別せず、空白区切りとカンマ区切りの両方を使えます。
+
+```bash
+python train.py -a boulware,conceder,Linear -i Laptop ...
+```
+
+対戦ペアは既定で同一相手の重複を許可した順序なし組み合わせです。3体なら`AA, AB, AC, BB, BC, CC`の6通りになります。異なる2体はOpponent 1/2のslotに偏らないよう、選択後に配置をランダム化します。重複を禁止する場合は`--no-allow-duplicate-opponents`を指定します。
+
+学習中はTransformer-basedと同じくターミナルに進捗ゲージ、経過時間、残り時間、step速度、episode数、pool size、utility、entropyを表示します。非表示にする場合は`--no-progress`を使います。
+
 expertモデル:
 
 ```bash
@@ -139,7 +149,7 @@ entropy coefficientは固定値として`--entropy-coefficient`で設定しま�
 
 ## Opponent PoolとPFSP
 
-poolは最初にBoulware、Linear、Conceder、Atlas3で初期化されます。その後、定期評価で優位になった学習方策をsnapshotとして追加します。公開実装のthree-source samplingをSLなしへ適応し、各slotを既定でcurrent self-play 20%、scripted 30%、historical snapshot 50%から選びます。利用できないsourceの確率は残りへ正規化します。
+poolは`-a/--agents`で指定したScripted opponentで初期化されます。その後、定期評価で優位になった学習方策をsnapshotとして追加します。既定では初期学習を指定したScripted opponentのみで行い、snapshot追加後はScripted/Historicalの基礎重みを50%ずつにし、PFSP重みと組み合わせてペアを抽選します。current self-playは既定で0%で、`--self-play-probability`を指定した場合のみ有効です。利用できないsourceの確率は残りへ正規化します。
 
 PFSPは公開実装の式`p(A) ∝ P[A dominates M]`を「学習エージェントから見た難しさ」として近似します。相手の効用関数は非公開とし、合意の有無、自分のutility、交渉長だけを使います。
 
@@ -218,7 +228,7 @@ python -m pytest -q
 - 初期poolはSL agentではなく4種類のscripted negotiatorです。
 - 2者交渉ではなく、MiPN互換の3者間SAOPです。
 - style選択は巨大なjoint actionを全列挙せず、actorが生成した候補をquantile criticで順位付けします。
-- 論文のSL source 30%はscripted sourceへ置き換え、current self-play 20%とhistorical RL snapshot 50%は維持します。
+- 論文のSL sourceは`-a`で指定したScripted opponentへ置き換えます。3体指定時の6組を初期学習に使うため、current self-playは既定で無効です。
 - 公開実装のpolicy lossはコード上`Q - alpha log pi`をgradient descentしていますが、本実装は論文の目的式どおり`alpha log pi - Q`を最小化します。
 - 公開実装は連続priceとcategorical intentに別alphaを持つため、本実装では各issue headとaccept/reject headに別alphaを持たせます。
 

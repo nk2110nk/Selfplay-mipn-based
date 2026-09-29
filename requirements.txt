@@ -7,3 +7,4 @@ scikit-learn==1.6.1
 sklearn==0.0
 setuptools==70.3.0
 pytest==8.4.2
+tqdm==4.70.1

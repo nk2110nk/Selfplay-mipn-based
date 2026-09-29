@@ -24,6 +24,12 @@ def test_domains_and_observation():
     assert env.current_mask()[-1, 0] == 0
 
 
+def test_agent_pool_cli_normalization():
+    args = parse_args(["-a", "boulware,conceder", "Linear", "BOULWARE"])
+    assert args.agents == ["Boulware", "Conceder", "Linear"]
+    assert args.allow_duplicate_opponents is True
+
+
 def test_training_snapshot_resume_and_tsv(tmp_path):
     model_dir = tmp_path / "AlphaNego_Negotiator"
     args = parse_args(["-a", "Boulware", "Linear", "-i", "Laptop", "-sp", str(model_dir),
@@ -34,6 +40,7 @@ def test_training_snapshot_resume_and_tsv(tmp_path):
     checkpoint = torch.load(model_dir / "checkpoint.pt", weights_only=False)
     assert checkpoint["global_step"] == 3
     pool = OpponentPool.load(model_dir / "pool")
+    assert [entry.name for entry in pool.entries if entry.kind == "scripted"] == ["Boulware", "Linear"]
     assert any(entry.kind == "snapshot" for entry in pool.entries)
     assert (model_dir / "evaluation" / "step-2.tsv").is_file()
     snapshot = next(entry for entry in pool.entries if entry.kind == "snapshot")

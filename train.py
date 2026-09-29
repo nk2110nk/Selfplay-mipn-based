@@ -4,11 +4,13 @@ import argparse
 import csv
 import json
 import random
+import sys
 from datetime import datetime
 from pathlib import Path
 
 import numpy as np
 import torch
+from tqdm.auto import tqdm
 try:
     from torch.utils.tensorboard import SummaryWriter
 except ImportError:
@@ -103,9 +105,23 @@ def append_log(path, row):
         writer.writerow(row)
 
 
+def normalize_agents(values, parser):
+    """Accept canonical names case-insensitively, with spaces or commas."""
+    lookup = {name.casefold(): name for name in SCRIPTED}
+    tokens = [part.strip() for value in values for part in value.split(",") if part.strip()]
+    unknown = [token for token in tokens if token.casefold() not in lookup]
+    if unknown:
+        parser.error(f"Unknown agent(s): {', '.join(unknown)}. Choose from: {', '.join(SCRIPTED)}")
+    agents = list(dict.fromkeys(lookup[token.casefold()] for token in tokens))
+    if not agents:
+        parser.error("At least one pool agent is required")
+    return agents
+
+
 def parse_args(argv=None):
     parser = argparse.ArgumentParser()
-    parser.add_argument("--agents", "-a", nargs="+", choices=SCRIPTED, default=["Boulware", "Linear"])
+    parser.add_argument("--agents", "-a", nargs="+", default=["Boulware", "Linear"],
+                        metavar="AGENT", help="Initial scripted pool (space- or comma-separated)")
     parser.add_argument("--issue", "--issues", "-i", nargs="+", default=["Laptop"])
     parser.add_argument("--save-path", "--save_path", "-sp", default="results")
     parser.add_argument("--resume")
@@ -146,22 +162,27 @@ def parse_args(argv=None):
     parser.add_argument("--max-pool-size", type=int, default=16)
     parser.add_argument("--dominance-tolerance", type=float, default=0.01)
     parser.add_argument("--min-agreement-rate", type=float, default=0.0)
-    parser.add_argument("--allow-duplicate-opponents", action="store_true")
+    parser.add_argument("--allow-duplicate-opponents", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--pfsp-alpha", type=float, default=1.0)
     parser.add_argument("--uniform-mix", type=float, default=0.1)
-    parser.add_argument("--self-play-probability", type=float, default=0.2)
-    parser.add_argument("--scripted-probability", type=float, default=0.3)
+    parser.add_argument("--self-play-probability", type=float, default=0.0)
+    parser.add_argument("--scripted-probability", type=float, default=0.5)
     parser.add_argument("--snapshot-probability", type=float, default=0.5)
     parser.add_argument("--score-length-weight", type=float, default=-0.005)
     parser.add_argument("--score-welfare-weight", type=float, default=0.0,
                         help=argparse.SUPPRESS)  # Old command/checkpoint compatibility only.
+    parser.add_argument("--progress", action=argparse.BooleanOptionalAction, default=True,
+                        help="Show a terminal progress bar")
     args = parser.parse_args(argv)
+    args.agents = normalize_agents(args.agents, parser)
     if args.model_type == "expert" and len(args.issue) != 1:
         parser.error("Expert mode needs exactly one issue")
     if args.total_timesteps < 1 or args.num_envs < 1 or args.batch_size < 1 or args.quantiles < 2 or args.pool_eval_episodes < 1:
         parser.error("Positive timesteps/envs/batch size and at least two quantiles required")
-    if args.max_pool_size < 5 or not 0 <= args.uniform_mix <= 1:
-        parser.error("Pool needs room for four scripted opponents, one snapshot and a valid uniform mix")
+    if args.max_pool_size < len(args.agents) + 1 or not 0 <= args.uniform_mix <= 1:
+        parser.error("Pool needs room for every scripted opponent, one snapshot and a valid uniform mix")
+    if not args.allow_duplicate_opponents and len(args.agents) < 2:
+        parser.error("At least two pool agents are required when duplicate opponents are disabled")
     final_entropy_ratio = (args.target_entropy_ratio if args.target_entropy_final_ratio is None
                            else args.target_entropy_final_ratio)
     if (args.entropy_coefficient <= 0 or not 0 < args.target_entropy_ratio <= 1 or
@@ -184,14 +205,17 @@ def train(args):
     if args.resume:
         checkpoint = torch.load(model_dir / "checkpoint.pt", map_location="cpu", weights_only=False)
         config = checkpoint["config"]
-        for key in ("issues", "agents", "general_domain", "model_type"):
-            current = args.issue if key == "issues" else args.agents if key == "agents" else getattr(args, key)
+        for key in ("issues", "general_domain", "model_type"):
+            current = args.issue if key == "issues" else getattr(args, key)
             if current != config[key]:
                 raise ValueError(f"Resume configuration differs for {key}: {current} != {config[key]}")
+        if config.get("agent_pool_from_cli", False) and set(args.agents) != set(config["agents"]):
+            raise ValueError(f"Resume agent pool differs: {args.agents} != {config['agents']}")
     else:
         config = vars(args).copy()
         config["issues"] = config.pop("issue")
         config.pop("resume")
+        config["agent_pool_from_cli"] = True
         (model_dir / "config.json").write_text(json.dumps(config, indent=2), encoding="utf-8")
     seed_everything(config["seed"])
     obs_dim, nvec = layout(config["issues"], config["general_domain"], config["model_type"])
@@ -227,7 +251,7 @@ def train(args):
         global_step = checkpoint["global_step"]
         episode = checkpoint["episode"]
     else:
-        pool = OpponentPool(pool_root, ("Boulware", "Linear", "Conceder", "Atlas3"),
+        pool = OpponentPool(pool_root, config["agents"],
                             max_size=config["max_pool_size"], pfsp_alpha=config["pfsp_alpha"],
                             uniform_mix=config["uniform_mix"],
                             allow_duplicates=config["allow_duplicate_opponents"],
@@ -256,6 +280,15 @@ def train(args):
     workers = [new_episode() for _ in range(args.num_envs)]
     last_loss = {"actor_loss": "", "critic_loss": "", "entropy": "", "alpha": model.alpha,
                  "alpha_loss": "", "target_entropy_ratio": model.current_target_entropy_ratio}
+    scripted_pairs = pool.scripted_pairs()
+    pair_labels = [f"{first.name}-{second.name}" for first, second in scripted_pairs]
+    print(f"Scripted pool ({len([entry for entry in pool.entries if entry.kind == 'scripted'])}): "
+          f"{', '.join(entry.name for entry in pool.entries if entry.kind == 'scripted')}")
+    print(f"Scripted pairs ({len(scripted_pairs)}): "
+          f"{', '.join(pair_labels) if len(pair_labels) <= 10 else 'see pool metadata'}")
+    progress = tqdm(total=args.total_timesteps, initial=min(global_step, args.total_timesteps),
+                    desc="Alpha-Nego training", unit="step", dynamic_ncols=True,
+                    disable=not args.progress or not sys.stderr.isatty())
     while global_step < args.total_timesteps:
         for index, worker in enumerate(workers):
             if global_step >= args.total_timesteps:
@@ -268,6 +301,7 @@ def train(args):
             model.replay.add(worker["obs"], action, reward, next_obs, done, mask, next_mask)
             worker["obs"] = next_obs
             global_step += 1
+            progress.update(1)
             if global_step >= config["learning_starts"]:
                 for _ in range(config["gradient_steps"]):
                     updated = model.update()
@@ -298,6 +332,12 @@ def train(args):
                     tensorboard.add_scalar("train/actor_loss", last_loss["actor_loss"] or 0.0, global_step)
                     tensorboard.add_scalar("train/critic_loss", last_loss["critic_loss"] or 0.0, global_step)
                     tensorboard.add_scalar("pool/size", len(pool.entries), global_step)
+                progress.set_postfix(episode=episode, pool=len(pool.entries), replay=len(model.replay),
+                                     agreement=int(info["agreement"] is not None),
+                                     utility=f"{info['my_util']:.3f}", alpha=f"{model.alpha:.4f}",
+                                     entropy=(f"{last_loss['entropy']:.3f}"
+                                              if last_loss["entropy"] != "" else "-"),
+                                     refresh=False)
                 workers[index] = new_episode()
             if (config["pool_eval_freq"] > 0 and global_step % config["pool_eval_freq"] == 0 or
                     config["snapshot_freq"] > 0 and global_step % config["snapshot_freq"] == 0):
@@ -335,6 +375,7 @@ def train(args):
                            "pool_size": len(pool.entries), "event": event})
                 save_checkpoint(model_dir, model, pool, config, global_step, episode, rng)
     save_checkpoint(model_dir, model, pool, config, global_step, episode, rng)
+    progress.close()
     if tensorboard is not None:
         tensorboard.close()
     return model_dir

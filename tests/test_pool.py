@@ -34,7 +34,7 @@ def test_pfsp_and_fallback():
 
 def test_pool_persistence_prune_and_dominance(tmp_path):
     root = tmp_path / "pool"
-    pool = OpponentPool(root, ["Boulware", "Linear"], max_size=3)
+    pool = OpponentPool(root, ["Boulware", "Linear"], max_size=3, allow_duplicates=False)
     first, second, probabilities = pool.sample_pair(np.random.default_rng(1))
     assert first.id != second.id and all(0 < p <= 1 for p in probabilities)
     first_path = root / "snapshots" / "snapshot-1.pt"
@@ -52,6 +52,27 @@ def test_pool_persistence_prune_and_dominance(tmp_path):
     assert removed == ["snapshot-1"] and not first_path.exists()
     assert second_path.exists()
     assert len(pool.entries) == 3
+
+
+def test_scripted_pair_space_includes_duplicates(tmp_path):
+    pool = OpponentPool(tmp_path / "pool", ["Boulware", "Conceder", "Linear"], max_size=4)
+    pairs = [(first.name, second.name) for first, second in pool.scripted_pairs()]
+    assert pairs == [
+        ("Boulware", "Boulware"),
+        ("Boulware", "Conceder"),
+        ("Boulware", "Linear"),
+        ("Conceder", "Conceder"),
+        ("Conceder", "Linear"),
+        ("Linear", "Linear"),
+    ]
+    sampled = pool.sample_pair(np.random.default_rng(3), current_model_available=True)
+    assert sampled[0].kind == sampled[1].kind == "scripted"
+    counts = {tuple(sorted((first.name, second.name))): 0 for first, second in pool.scripted_pairs()}
+    rng = np.random.default_rng(4)
+    for _ in range(6000):
+        first, second, _ = pool.sample_pair(rng)
+        counts[tuple(sorted((first.name, second.name)))] += 1
+    assert max(counts.values()) / min(counts.values()) < 1.2
 
 
 def test_three_source_current_self_play(tmp_path):

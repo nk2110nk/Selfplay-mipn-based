@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import asdict, dataclass, field
+from itertools import combinations, combinations_with_replacement
 from pathlib import Path
 
 import numpy as np
@@ -66,8 +67,8 @@ def is_dominant(current, incumbent, tolerance=0.01, min_agreement=0.0):
 
 class OpponentPool:
     def __init__(self, root, names, *, max_size=16, pfsp_alpha=1.0, uniform_mix=0.1,
-                 allow_duplicates=False, length_weight=-0.005, welfare_weight=0.1,
-                 self_play_probability=0.2, scripted_probability=0.3,
+                 allow_duplicates=True, length_weight=-0.005, welfare_weight=0.1,
+                 self_play_probability=0.0, scripted_probability=0.5,
                  snapshot_probability=0.5):
         self.root = Path(root)
         self.max_size = max_size
@@ -88,6 +89,12 @@ class OpponentPool:
 
     def probabilities(self):
         return pfsp_probabilities(self.entries, self.pfsp_alpha, self.uniform_mix)
+
+    def scripted_pairs(self):
+        """Return the unordered scripted matchup space used at initialization."""
+        scripted = [entry for entry in self.entries if entry.kind == "scripted"]
+        factory = combinations_with_replacement if self.allow_duplicates else combinations
+        return list(factory(scripted, 2))
 
     def sample_pair(self, rng, *, current_model_available=False):
         """Sample both SAOP slots from Alpha-Nego's source mixture and PFSP."""
@@ -114,8 +121,18 @@ class OpponentPool:
         probabilities /= probabilities.sum()
         if len(choices) < 2 and not self.allow_duplicates:
             raise ValueError("Two distinct opponents are required when duplicates are disabled")
-        indices = rng.choice(len(choices), size=2, replace=self.allow_duplicates, p=probabilities)
-        selected = [choices[int(index)] for index in indices]
+        factory = combinations_with_replacement if self.allow_duplicates else combinations
+        pairs = list(factory(range(len(choices)), 2))
+        pair_probabilities = np.asarray([
+            probabilities[first] * probabilities[second]
+            for first, second in pairs
+        ], dtype=np.float64)
+        pair_probabilities /= pair_probabilities.sum()
+        first, second = pairs[int(rng.choice(len(pairs), p=pair_probabilities))]
+        if first != second and rng.random() < 0.5:
+            first, second = second, first
+        indices = (first, second)
+        selected = [choices[index] for index in indices]
         for entry in selected:
             entry.selected += 1
         return selected[0], selected[1], tuple(float(probabilities[index]) for index in indices)
@@ -167,8 +184,8 @@ class OpponentPool:
                   max_size=data["max_size"], pfsp_alpha=data["pfsp_alpha"],
                   uniform_mix=data["uniform_mix"], allow_duplicates=data["allow_duplicates"],
                   length_weight=data["length_weight"], welfare_weight=data["welfare_weight"],
-                  self_play_probability=data.get("self_play_probability", 0.2),
-                  scripted_probability=data.get("scripted_probability", 0.3),
+                  self_play_probability=data.get("self_play_probability", 0.0),
+                  scripted_probability=data.get("scripted_probability", 0.5),
                   snapshot_probability=data.get("snapshot_probability", 0.5))
         obj.entries = [PoolEntry(**entry) for entry in data["entries"]]
         for entry in obj.entries:
