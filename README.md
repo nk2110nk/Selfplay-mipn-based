@@ -193,6 +193,8 @@ poolは`-a/--agents`で指定したScripted opponentで初期化されます。�
 
 PFSPは公開実装の式`p(A) ∝ P[A dominates M]`を「学習エージェントから見た難しさ」として近似します。相手の効用関数は非公開とし、合意の有無、自分のutility、交渉長だけを使います。
 
+定期pool評価の`--pool-eval-episodes`（既定4）は最低評価回数です。expertでは従来どおり1ドメインを4回評価します。generalでは全学習ドメインを同数評価できる完全な周回へ切り上げるため、7ドメイン・既定4なら各ドメイン1回の合計7回、14なら各2回、28なら各4回です。集計は各ドメイン同数のmacro averageとなり、評価TSV末尾の`domain`列でcoverageを確認できます。
+
 ```text
 difficulty = 0.45 * (1 - agreement_rate)
            + 0.40 * (1 - clip(agent_utility, 0, 1))

@@ -8,7 +8,7 @@ from opponent_pool.pfsp import negotiation_score
 
 FIELDS = ("my_util", "opp_util1", "opp_util2", "social", "nash", "agreement", "step",
           "style", "opponent1_id", "opponent2_id", "opponent1_source", "opponent2_source",
-          "negotiation_score", "seed")
+          "negotiation_score", "seed", "domain")
 
 
 def result_path(model_dir, agents, issue, deterministic=False, noise=False):
@@ -27,7 +27,8 @@ def write_results(path, rows):
         writer.writerows(rows)
 
 
-def row_from_info(info, style, opponents, seed, *, length_weight=-0.005, welfare_weight=0.1):
+def row_from_info(info, style, opponents, seed, *, domain="", length_weight=-0.005,
+                  welfare_weight=0.1):
     agreement = info["agreement"]
     return {"my_util": info["my_util"], "opp_util1": info["opp_util1"],
             "opp_util2": info["opp_util2"], "social": info["social"], "nash": info["nash"],
@@ -37,4 +38,5 @@ def row_from_info(info, style, opponents, seed, *, length_weight=-0.005, welfare
             "negotiation_score": negotiation_score(agreement is not None, info["my_util"],
                                                    info["step"], info["social"],
                                                    length_weight=length_weight,
-                                                   welfare_weight=welfare_weight), "seed": seed}
+                                                   welfare_weight=welfare_weight), "seed": seed,
+            "domain": domain}

@@ -7,6 +7,7 @@ import torch
 from compat import KNOWN_DOMAINS, UNKNOWN_DOMAINS, load_genius_domain
 from dsac import DSAC
 from environment import NegotiationEnv
+from opponent_pool.evaluator import balanced_domain_schedule
 from opponent_pool.pool import OpponentPool, PoolEntry
 from results import FIELDS
 from test_negotiator import evaluate, validate_domains
@@ -33,6 +34,13 @@ def test_agent_pool_cli_normalization():
 
     general = parse_args(["--model-type", "general"])
     assert general.compatible_domains == list(UNKNOWN_DOMAINS)
+
+
+def test_pool_evaluation_uses_complete_balanced_domain_cycles():
+    domains = list(KNOWN_DOMAINS)
+    assert balanced_domain_schedule(domains, 4) == domains
+    assert balanced_domain_schedule(domains, 8) == domains * 2
+    assert balanced_domain_schedule(["Laptop"], 4) == ["Laptop"] * 4
 
 
 def test_general_layout_runs_every_unknown_domain():
@@ -67,6 +75,9 @@ def test_training_snapshot_resume_and_tsv(tmp_path):
     assert [entry.name for entry in pool.entries if entry.kind == "scripted"] == ["Boulware", "Linear"]
     assert any(entry.kind == "snapshot" for entry in pool.entries)
     assert (model_dir / "evaluation" / "step-2.tsv").is_file()
+    with (model_dir / "evaluation" / "step-2.tsv").open(newline="", encoding="utf-8") as handle:
+        rows = list(csv.DictReader(handle, delimiter="\t"))
+        assert rows and {row["domain"] for row in rows} == {"Laptop"}
     snapshot = next(entry for entry in pool.entries if entry.kind == "snapshot")
     env = NegotiationEnv("Laptop", model_dir, checkpoint["dsac"]["obs_dim"],
                          checkpoint["dsac"]["action_nvec"])
@@ -86,6 +97,6 @@ def test_training_snapshot_resume_and_tsv(tmp_path):
             reader = csv.DictReader(handle, delimiter="\t")
             assert tuple(reader.fieldnames[:7]) == FIELDS[:7]
             rows = list(reader)
-            assert len(rows) == 1 and rows[0]["style"] == style
+            assert len(rows) == 1 and rows[0]["style"] == style and rows[0]["domain"] == "Laptop"
         case_path = model_dir / "results_alpha-nego-based" / "expert" / "Boulware-Linear" / "Laptop" / "case1" / files[0].name
         assert case_path.is_file()

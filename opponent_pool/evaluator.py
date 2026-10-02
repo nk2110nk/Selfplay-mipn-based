@@ -9,6 +9,17 @@ from environment import NegotiationEnv
 from .pfsp import negotiation_score
 
 
+def balanced_domain_schedule(domains, minimum_episodes):
+    """Return complete domain cycles meeting the requested episode minimum."""
+    unique_domains = list(dict.fromkeys(domains))
+    if not unique_domains:
+        raise ValueError("Pool evaluation needs at least one domain")
+    if minimum_episodes < 1:
+        raise ValueError("Pool evaluation episodes must be positive")
+    cycles = (minimum_episodes + len(unique_domains) - 1) // len(unique_domains)
+    return unique_domains * cycles
+
+
 def evaluate_pool(model, pool, domains, episodes, model_dir, *, seed, device,
                   length_weight=-0.005, welfare_weight=0.1):
     scripted = next((entry for entry in pool.entries if entry.kind == "scripted"), None)
@@ -17,15 +28,15 @@ def evaluate_pool(model, pool, domains, episodes, model_dir, *, seed, device,
     states = (random.getstate(), np.random.get_state(), torch.get_rng_state())
     overall = []
     episode_rows = []
+    schedule = balanced_domain_schedule(domains, episodes)
     try:
         for entry in list(pool.entries):
             rows = []
-            for episode in range(episodes):
+            for episode, domain in enumerate(schedule):
                 episode_seed = seed + episode
                 random.seed(episode_seed)
                 np.random.seed(episode_seed)
                 torch.manual_seed(episode_seed)
-                domain = domains[episode % len(domains)]
                 env = NegotiationEnv(domain, model_dir, model.obs_dim, model.nvec, device=device, test=True)
                 observation = env.reset((entry, scripted))
                 done = False

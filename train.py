@@ -365,10 +365,10 @@ def train(args):
                     entry.record(measurements[entry.id], global_step,
                                  length_weight=pool.length_weight, welfare_weight=pool.welfare_weight)
                 write_results(model_dir / "evaluation" / f"step-{global_step}.tsv", [
-                    row_from_info(info, "neutral", (entry, anchor), episode_seed,
+                    row_from_info(info, "neutral", (entry, anchor), episode_seed, domain=domain,
                                   length_weight=pool.length_weight,
                                   welfare_weight=pool.welfare_weight)
-                    for entry, anchor, _, episode_seed, info in evaluation_rows])
+                    for entry, anchor, domain, episode_seed, info in evaluation_rows])
                 event = "pool_evaluation"
                 if config["snapshot_freq"] > 0 and global_step % config["snapshot_freq"] == 0:
                     incumbents = [e for e in pool.entries if e.kind == "snapshot"]

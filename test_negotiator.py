@@ -97,7 +97,7 @@ def evaluate(model_path, agents, issues, episodes=100, *, style="neutral", seed=
                                        conservative_quantile=conservative_quantile,
                                        risk_weight=risk_weight)
                     observation, _, done, info = env.step(action)
-                rows.append(row_from_info(info, style, opponents, episode_seed,
+                rows.append(row_from_info(info, style, opponents, episode_seed, domain=issue,
                                           length_weight=config["score_length_weight"],
                                           welfare_weight=config["score_welfare_weight"]))
             path = result_path(model_dir, pair, issue, deterministic, noise)
