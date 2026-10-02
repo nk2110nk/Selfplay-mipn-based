@@ -6,7 +6,7 @@ import torch
 
 from compat import KNOWN_DOMAINS, UNKNOWN_DOMAINS, load_genius_domain
 from dsac import DSAC
-from environment import NegotiationEnv
+from environment import CASE_UTILITY_ORDERS, NegotiationEnv
 from opponent_pool.evaluator import balanced_domain_schedule
 from opponent_pool.pool import OpponentPool, PoolEntry
 from results import FIELDS
@@ -34,6 +34,15 @@ def test_agent_pool_cli_normalization():
 
     general = parse_args(["--model-type", "general"])
     assert general.compatible_domains == list(UNKNOWN_DOMAINS)
+    assert general.case == "case1" and parse_args(["--case", "case3"]).case == "case3"
+
+
+def test_case_utility_rotation():
+    domain, utilities = load_genius_domain("Laptop")
+    bid = {issue.name: issue.values[0] for issue in domain}
+    for case_name, order in CASE_UTILITY_ORDERS.items():
+        env = NegotiationEnv("Laptop", ".", 181, [7, 5, 5, 5, 5, 5, 2], case=case_name)
+        assert [utility(bid) for utility in env.utilities] == [utilities[index](bid) for index in order]
 
 
 def test_pool_evaluation_uses_complete_balanced_domain_cycles():
@@ -97,6 +106,7 @@ def test_training_snapshot_resume_and_tsv(tmp_path):
             reader = csv.DictReader(handle, delimiter="\t")
             assert tuple(reader.fieldnames[:7]) == FIELDS[:7]
             rows = list(reader)
-            assert len(rows) == 1 and rows[0]["style"] == style and rows[0]["domain"] == "Laptop"
+            assert (len(rows) == 1 and rows[0]["style"] == style and
+                    rows[0]["domain"] == "Laptop" and rows[0]["case"] == "case1")
         case_path = model_dir / "results_alpha-nego-based" / "expert" / "Boulware-Linear" / "Laptop" / "case1" / files[0].name
         assert case_path.is_file()

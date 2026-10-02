@@ -18,7 +18,7 @@ except ImportError:
 
 from compat import SCRIPTED, UNKNOWN_DOMAINS, load_genius_domain
 from dsac import DSAC
-from environment import NegotiationEnv
+from environment import CASE_UTILITY_ORDERS, NegotiationEnv
 from opponent_pool.evaluator import evaluate_pool
 from opponent_pool.pool import OpponentPool, is_dominant
 from results import row_from_info, write_results
@@ -97,6 +97,7 @@ def snapshot(model_dir, model, config, step, metrics):
                 "dropout": model.dropout, "architecture_version": 2,
                 "obs_layout": "padded_time_last", "issues": config["issues"],
                 "general_domain": config["general_domain"], "model_type": config["model_type"],
+                "case": config.get("case", "case1"),
                 "compatible_domains": config.get("compatible_domains", []),
                 "benchmark": metrics}, path)
     return path
@@ -136,6 +137,7 @@ def parse_args(argv=None):
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--device", choices=("auto", "cpu", "cuda"), default="auto")
     parser.add_argument("--model-type", choices=("expert", "general"), default="expert")
+    parser.add_argument("--case", choices=tuple(CASE_UTILITY_ORDERS), default="case1")
     parser.add_argument("--general-domain", "--general_domain", default="EnergySmall_A")
     parser.add_argument("--compatible-domains", nargs="+", default=None,
                         help="Evaluation-only domains included when sizing a general model")
@@ -217,10 +219,11 @@ def train(args):
     if args.resume:
         checkpoint = torch.load(model_dir / "checkpoint.pt", map_location="cpu", weights_only=False)
         config = checkpoint["config"]
-        for key in ("issues", "general_domain", "model_type"):
+        for key in ("issues", "general_domain", "model_type", "case"):
             current = args.issue if key == "issues" else getattr(args, key)
-            if current != config[key]:
-                raise ValueError(f"Resume configuration differs for {key}: {current} != {config[key]}")
+            saved = config.get(key, "case1") if key == "case" else config[key]
+            if current != saved:
+                raise ValueError(f"Resume configuration differs for {key}: {current} != {saved}")
         if "compatible_domains" in config and args.compatible_domains != config["compatible_domains"]:
             raise ValueError("Resume configuration differs for compatible_domains: "
                              f"{args.compatible_domains} != {config['compatible_domains']}")
@@ -289,7 +292,8 @@ def train(args):
     def new_episode():
         domain = config["issues"][int(rng.integers(len(config["issues"])))]
         first, second, probabilities = pool.sample_pair(rng, current_model_available=True)
-        env = NegotiationEnv(domain, model_dir, obs_dim, nvec, device=args.device)
+        env = NegotiationEnv(domain, model_dir, obs_dim, nvec, case=config.get("case", "case1"),
+                             device=args.device)
         return {"env": env, "obs": env.reset((first, second), current_model=model), "opponents": (first, second),
                 "probabilities": probabilities}
 
@@ -360,12 +364,14 @@ def train(args):
                 measurements, benchmark, evaluation_rows = evaluate_pool(
                     model, pool, config["issues"], config["pool_eval_episodes"], model_dir,
                     seed=config["seed"] + global_step, device=args.device,
+                    case=config.get("case", "case1"),
                     length_weight=pool.length_weight, welfare_weight=pool.welfare_weight)
                 for entry in pool.entries:
                     entry.record(measurements[entry.id], global_step,
                                  length_weight=pool.length_weight, welfare_weight=pool.welfare_weight)
                 write_results(model_dir / "evaluation" / f"step-{global_step}.tsv", [
                     row_from_info(info, "neutral", (entry, anchor), episode_seed, domain=domain,
+                                  case=config.get("case", "case1"),
                                   length_weight=pool.length_weight,
                                   welfare_weight=pool.welfare_weight)
                     for entry, anchor, domain, episode_seed, info in evaluation_rows])

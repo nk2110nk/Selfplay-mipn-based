@@ -21,7 +21,7 @@ def balanced_domain_schedule(domains, minimum_episodes):
 
 
 def evaluate_pool(model, pool, domains, episodes, model_dir, *, seed, device,
-                  length_weight=-0.005, welfare_weight=0.1):
+                  case="case1", length_weight=-0.005, welfare_weight=0.1):
     scripted = next((entry for entry in pool.entries if entry.kind == "scripted"), None)
     if scripted is None:
         raise ValueError("Pool needs a scripted anchor")
@@ -37,7 +37,8 @@ def evaluate_pool(model, pool, domains, episodes, model_dir, *, seed, device,
                 random.seed(episode_seed)
                 np.random.seed(episode_seed)
                 torch.manual_seed(episode_seed)
-                env = NegotiationEnv(domain, model_dir, model.obs_dim, model.nvec, device=device, test=True)
+                env = NegotiationEnv(domain, model_dir, model.obs_dim, model.nvec, case=case,
+                                     device=device, test=True)
                 observation = env.reset((entry, scripted))
                 done = False
                 while not done:

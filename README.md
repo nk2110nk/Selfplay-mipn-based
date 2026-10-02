@@ -165,6 +165,43 @@ STYLE=conservative MODEL_PATH=/path/to/AlphaNego_Negotiator \
 CASE_NAME=case2 ./run_command/export_case_results.sh
 ```
 
+## case1-case3本実験
+
+`case1`から`case3`は保存先だけでなく、学習・pool評価・最終評価で使う効用順序を表します。
+
+| case | 学習エージェント | Opponent 1 | Opponent 2 |
+|---|---|---|---|
+| case1 | utility1 | utility2 | utility3 |
+| case2 | utility2 | utility3 | utility1 |
+| case3 | utility3 | utility1 | utility2 |
+
+本実験はexpert 210モデル（7既知ドメイン x 10相手ペア x 3 cases、各100,000 step）とgeneral 3モデル（7既知ドメイン x 3 cases、各300,000 step）です。seedは0、generalだけが5未知ドメインも評価します。結果は`results/case1`から`results/case3`へ分離されます。
+
+2 GPUを使ってDocker内の学習をtmuxで開始します。
+
+```bash
+bash run_command/launch_case_experiments_tmux.sh
+tmux attach -t selfplay-mipn-cases
+```
+
+各GPUのジョブはcheckpointが完了済みならskipし、未完了ならresumeします。手動で1 shardだけ動かす場合:
+
+```bash
+CUDA_VISIBLE_DEVICES=0 SHARD_INDEX=0 SHARD_COUNT=2 \
+  bash run_command/run_case_experiments.sh
+```
+
+全学習完了後の評価も2 shardへ分割できます。各条件100 episode、neutral styleで、expertは対応する既知ドメイン・相手ペア、generalは既知7・未知5ドメインの全10ペアを評価します。
+
+```bash
+CUDA_VISIBLE_DEVICES=0 SHARD_INDEX=0 SHARD_COUNT=2 \
+  bash run_command/evaluate_case_experiments.sh
+CUDA_VISIBLE_DEVICES=1 SHARD_INDEX=1 SHARD_COUNT=2 \
+  bash run_command/evaluate_case_experiments.sh
+```
+
+共通集計用TSVは`results/caseN/evaluation/<expert|general>/<pair>/<domain>/caseN/`へ保存されます。
+
 ## DSAC
 
 actorは公開実装のshared encoderをMultiDiscrete向けに適応し、各issueとaccept/rejectに独立したcategorical headを持ちます。actor/criticはLayerNorm、ReLU、dropoutを使用します。criticは状態とjoint actionのone-hotを入力し、既定で64 quantileを返します。

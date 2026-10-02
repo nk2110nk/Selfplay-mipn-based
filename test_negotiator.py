@@ -17,6 +17,13 @@ from policy import domain_nvec
 from results import result_path, row_from_info, write_results
 
 
+def normalize_case(value):
+    if value is None:
+        return None
+    text = str(value)
+    return text if text.startswith("case") else f"case{text}"
+
+
 def validate_domains(issues, model, config):
     """Fail before evaluation when a checkpoint cannot encode a domain."""
     for issue in issues:
@@ -50,6 +57,10 @@ def evaluate(model_path, agents, issues, episodes=100, *, style="neutral", seed=
         model_path = model_path / "checkpoint.pt"
     checkpoint = torch.load(model_path, map_location="cpu", weights_only=False)
     config = checkpoint["config"]
+    configured_case = config.get("case", "case1")
+    requested_case = normalize_case(case)
+    if requested_case is not None and requested_case != configured_case:
+        raise ValueError(f"Checkpoint is {configured_case}, not {requested_case}")
     state = checkpoint["dsac"]
     entropy = state["entropy_parameters"]
     coefficient = (float(entropy["log_alpha"].exp().mean()) if "log_alpha" in entropy
@@ -87,8 +98,8 @@ def evaluate(model_path, agents, issues, episodes=100, *, style="neutral", seed=
                 random.seed(episode_seed)
                 np.random.seed(episode_seed)
                 torch.manual_seed(episode_seed)
-                env = NegotiationEnv(issue, model_dir, model.obs_dim, model.nvec, device=device,
-                                     test=True, noise=noise)
+                env = NegotiationEnv(issue, model_dir, model.obs_dim, model.nvec,
+                                     case=configured_case, device=device, test=True, noise=noise)
                 observation = env.reset(opponents)
                 done = False
                 while not done:
@@ -98,14 +109,15 @@ def evaluate(model_path, agents, issues, episodes=100, *, style="neutral", seed=
                                        risk_weight=risk_weight)
                     observation, _, done, info = env.step(action)
                 rows.append(row_from_info(info, style, opponents, episode_seed, domain=issue,
+                                          case=configured_case,
                                           length_weight=config["score_length_weight"],
                                           welfare_weight=config["score_welfare_weight"]))
             path = result_path(model_dir, pair, issue, deterministic, noise)
             write_results(path, rows)
             result_files.append(path)
-            if case is not None:
+            if requested_case is not None:
                 root = Path(export_root) if export_root else model_dir / "results_alpha-nego-based"
-                target = root / config["model_type"] / f"{pair[0]}-{pair[1]}" / issue / f"case{case}" / path.name
+                target = root / config["model_type"] / f"{pair[0]}-{pair[1]}" / issue / requested_case / path.name
                 target.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copyfile(path, target)
     return result_files
@@ -125,7 +137,7 @@ def main():
     parser.add_argument("--conservative-quantile", type=float, default=0.2)
     parser.add_argument("--risk-weight", type=float, default=0.1)
     parser.add_argument("--noise", action="store_true")
-    parser.add_argument("--case", type=int, choices=range(1, 7))
+    parser.add_argument("--case", choices=("1", "2", "3", "case1", "case2", "case3"))
     parser.add_argument("--export-root")
     args = parser.parse_args()
     if not 0 <= args.aggressive_quantile < 1 or not 0 < args.conservative_quantile <= 1:

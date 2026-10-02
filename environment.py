@@ -13,6 +13,13 @@ from dsac import DSAC
 from policy import action_mask, domain_nvec, padded_observation
 
 
+CASE_UTILITY_ORDERS = {
+    "case1": (0, 1, 2),
+    "case2": (1, 2, 0),
+    "case3": (2, 0, 1),
+}
+
+
 class BidObserver:
     """MiPN OnehotObserve2nT layout: two newest offers per role, then time."""
 
@@ -116,13 +123,16 @@ class PolicyNegotiator(ActionNegotiator):
         return super().propose(state)
 
 
-def load_snapshot(entry, model_dir, expected_obs_dim, expected_nvec, domain_name, device="cpu"):
+def load_snapshot(entry, model_dir, expected_obs_dim, expected_nvec, domain_name, case="case1",
+                  device="cpu"):
     path = Path(model_dir) / entry.checkpoint_path
     state = torch.load(path, map_location="cpu", weights_only=False)
     if state["obs_layout"] != "padded_time_last" or state["obs_dim"] != expected_obs_dim or tuple(state["action_nvec"]) != tuple(expected_nvec):
         raise ValueError(f"Incompatible snapshot: {path}")
     if state["model_type"] == "expert" and domain_name not in state["issues"]:
         raise ValueError(f"Snapshot {path} was trained for {state['issues']}, not {domain_name}")
+    if state.get("case", "case1") != case:
+        raise ValueError(f"Snapshot {path} belongs to {state.get('case', 'case1')}, not {case}")
     model = DSAC(state["obs_dim"], state["action_nvec"], device=device, quantiles=state["quantiles"],
                  hidden=state["hidden"], dropout=state.get("dropout", 0.1), buffer_size=1)
     model.actor.load_state_dict(state["actor"])
@@ -135,7 +145,10 @@ def load_snapshot(entry, model_dir, expected_obs_dim, expected_nvec, domain_name
 
 
 class NegotiationEnv:
-    def __init__(self, domain_name, model_dir, obs_dim, nvec, *, device="cpu", test=False, noise=False):
+    def __init__(self, domain_name, model_dir, obs_dim, nvec, *, case="case1", device="cpu",
+                 test=False, noise=False):
+        if case not in CASE_UTILITY_ORDERS:
+            raise ValueError(f"Unknown utility case: {case}")
         self.domain_name = domain_name
         self.model_dir = Path(model_dir)
         self.obs_dim = obs_dim
@@ -143,7 +156,9 @@ class NegotiationEnv:
         self.device = device
         self.test = test
         self.noise = noise
-        self.domain, self.utilities = load_genius_domain(domain_name)
+        self.case = case
+        self.domain, utilities = load_genius_domain(domain_name)
+        self.utilities = tuple(utilities[index] for index in CASE_UTILITY_ORDERS[case])
         self.valid_nvec = domain_nvec(self.domain, self.nvec)
         self.observation_space_shape = (obs_dim,)
         self.action_space_nvec = tuple(len(issue.values) for issue in self.domain) + (2,)
@@ -153,7 +168,8 @@ class NegotiationEnv:
         self.state = None
 
     def reset(self, opponents, *, current_model=None):
-        self.domain, self.utilities = load_genius_domain(self.domain_name)
+        self.domain, utilities = load_genius_domain(self.domain_name)
+        self.utilities = tuple(utilities[index] for index in CASE_UTILITY_ORDERS[self.case])
         self.session = MySAOMechanism(issues=self.domain, n_steps=80, avoid_ultimatum=False)
         self.learner = ActionNegotiator("RLAgent")
         agents = []
@@ -166,7 +182,8 @@ class NegotiationEnv:
                 agents.append(PolicyNegotiator(f"CurrentAlphaNego-{slot}", current_model,
                                                self.obs_dim, self.nvec, style=None))
             else:
-                model = load_snapshot(entry, self.model_dir, self.obs_dim, self.nvec, self.domain_name, self.device)
+                model = load_snapshot(entry, self.model_dir, self.obs_dim, self.nvec,
+                                      self.domain_name, self.case, self.device)
                 agents.append(PolicyNegotiator(f"Snapshot{entry.added_step}-{slot}", model,
                                                self.obs_dim, self.nvec, style=None))
         names = [agent.name for agent in agents]
