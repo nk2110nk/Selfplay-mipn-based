@@ -61,10 +61,11 @@ expertモデル:
 ```bash
 source .venv/bin/activate
 python train.py \
-  -a Boulware Linear Conceder Atlas3 \
+  -a Boulware Conceder \
   -i Laptop \
   --model-type expert \
-  --total-timesteps 1100000 \
+  --no-allow-duplicate-opponents \
+  --total-timesteps 100000 \
   --device auto
 ```
 
@@ -76,7 +77,7 @@ python train.py \
   -i Laptop ItexvsCypress IS_BT_Acquisition Grocery thompson Car EnergySmall_A \
   --model-type general \
   --general-domain EnergySmall_A \
-  --total-timesteps 1100000
+  --total-timesteps 300000
 ```
 
 `general`では観測shapeとaction headを`general_domain`から決めます。各対象ドメインはそのshape以内である必要があり、余白を0でpaddingします。`relative_time`は常に最後の要素です。対象ドメインに存在しないissue/valueはaction maskで選択できません。
@@ -123,6 +124,42 @@ styleの価値集約は次のとおりです。
 ```bash
 python test_negotiator.py -m MODEL_DIR -a Boulware Linear -i Laptop \
   -e 100 --style neutral --case 1 --export-root results_alpha-nego-based
+```
+
+## 一括実験
+
+`run_command/`には、標準7ドメインとBoulware、Conceder、Linear、Atlas3を使う一括実験スクリプトがあります。expert学習は重複を含む順序なし10ペアを各ドメインで個別に学習するため、合計70モデルです。general学習は全ドメイン・全エージェントを1モデルへ登録します。
+
+```bash
+# expert: 70モデル、各100,000 step
+CUDA_VISIBLE_DEVICES=0 ./run_command/train_expert.sh
+
+# general: 1モデル、300,000 step
+CUDA_VISIBLE_DEVICES=0 ./run_command/train_general.sh
+
+# 各expertモデルを対応するドメイン・固定ペアで評価
+CUDA_VISIBLE_DEVICES=0 ./run_command/test_expert.sh
+
+# generalモデルを既知7＋未知3ドメイン x 10ペアで評価
+CUDA_VISIBLE_DEVICES=0 ./run_command/test_general.sh
+```
+
+generalの未知ドメインは`Camera`、`Lunch`、`Kitchen`です。これらは学習対象に含まれず、かつ学習済みcheckpointの6 issue・各最5 valueのaction space内に収まります。`Coffee`は7 value、`SmartPhone`は6 valueのissueを持つため、このcheckpointでは無効行動を区別して全valueを表現できず、評価対象外です。
+
+既定値は`DEVICE=cuda`、`SEED=0`、評価は`EPISODES=100`、`STYLE=neutral`です。スクリプトを編集せず、環境変数で変更できます。`DRY_RUN=1`はコマンド表示のみ、`LIMIT=N`はexpertの先頭Nケースだけを実行します。
+
+```bash
+DRY_RUN=1 LIMIT=3 ./run_command/train_expert.sh
+DEVICE=cpu EPISODES=10 LIMIT=1 ./run_command/test_expert.sh
+STYLE=conservative MODEL_PATH=/path/to/AlphaNego_Negotiator \
+  ./run_command/test_general.sh
+```
+
+評価完了後、`Results_MultiNego`の共通構造へcase単位で配置できます。既定の`case1`では、expert 70件とgeneral 100件がすべて101行（header＋100 episodes）であることを確認してからコピーします。
+
+```bash
+./run_command/export_case_results.sh
+CASE_NAME=case2 ./run_command/export_case_results.sh
 ```
 
 ## DSAC
