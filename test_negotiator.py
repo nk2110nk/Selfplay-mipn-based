@@ -9,11 +9,36 @@ from pathlib import Path
 import numpy as np
 import torch
 
-from compat import SCRIPTED
+from compat import SCRIPTED, load_genius_domain
 from dsac import DSAC
 from environment import NegotiationEnv
 from opponent_pool.pool import PoolEntry
+from policy import domain_nvec
 from results import result_path, row_from_info, write_results
+
+
+def validate_domains(issues, model, config):
+    """Fail before evaluation when a checkpoint cannot encode a domain."""
+    for issue in issues:
+        if config["model_type"] == "expert" and issue not in config["issues"]:
+            raise ValueError(f"Expert checkpoint cannot evaluate domain {issue}")
+        domain = load_genius_domain(issue)[0]
+        try:
+            domain_nvec(domain, model.nvec)
+        except ValueError as error:
+            counts = [len(item.values) for item in domain]
+            raise ValueError(
+                f"Checkpoint action space {list(model.nvec)} cannot represent {issue} "
+                f"with per-issue values {counts}. Retrain a general model with "
+                f"--compatible-domains including {issue}."
+            ) from error
+        required_obs_dim = sum(len(item.values) for item in domain) * 6 + 1
+        if required_obs_dim > model.obs_dim:
+            raise ValueError(
+                f"Checkpoint observation size {model.obs_dim} cannot represent {issue} "
+                f"(requires {required_obs_dim}). Retrain a general model with "
+                f"--compatible-domains including {issue}."
+            )
 
 
 def evaluate(model_path, agents, issues, episodes=100, *, style="neutral", seed=0,
@@ -49,12 +74,11 @@ def evaluate(model_path, agents, issues, episodes=100, *, style="neutral", seed=
     model.actor.eval()
     for critic in model.critics:
         critic.eval()
+    validate_domains(issues, model, config)
     model_dir = model_path.parent
     result_files = []
     pairs = [tuple(agents)] if len(agents) == 2 else list(combinations_with_replacement(agents, 2))
     for issue in issues:
-        if config["model_type"] == "expert" and issue not in config["issues"]:
-            raise ValueError(f"Expert checkpoint cannot evaluate domain {issue}")
         for pair in pairs:
             opponents = tuple(PoolEntry(f"scripted-{name}", "scripted", name) for name in pair)
             rows = []

@@ -15,11 +15,13 @@ KNOWN_DOMAINS=(
   EnergySmall_A
 )
 
-# Unseen during training, but compatible with the checkpoint's six heads and
-# maximum of five values per head. Coffee and SmartPhone exceed that limit.
+# Unseen during training. New general checkpoints reserve enough action-head
+# capacity for every domain in this list.
 UNKNOWN_DOMAINS=(
+  Coffee
   Camera
   Lunch
+  SmartPhone
   Kitchen
 )
 
@@ -74,7 +76,7 @@ cmd=(
 
 echo "General evaluation: 10 opponent pairs x ${#DOMAINS[@]} domains = $((10 * ${#DOMAINS[@]})) cases"
 echo "Known domains: ${KNOWN_DOMAINS[*]}"
-echo "Unseen compatible domains: ${UNKNOWN_DOMAINS[*]}"
+echo "Unseen domains: ${UNKNOWN_DOMAINS[*]}"
 echo "Model: $MODEL_PATH"
 if [[ "$DRY_RUN" == "1" ]]; then
   printf '  %q' "${cmd[@]}"

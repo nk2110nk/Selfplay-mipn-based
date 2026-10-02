@@ -21,6 +21,13 @@ from sao.my_negotiators import (  # noqa: E402
 
 SCRIPTED = ("Boulware", "Linear", "Conceder", "Atlas3", "TitForTat1", "TitForTat2", "AgentK", "HardHeaded", "AgentGG")
 
+KNOWN_DOMAINS = (
+    "Laptop", "ItexvsCypress", "IS_BT_Acquisition", "Grocery",
+    "thompson", "Car", "EnergySmall_A",
+)
+
+UNKNOWN_DOMAINS = ("Coffee", "Camera", "Lunch", "SmartPhone", "Kitchen")
+
 
 def scripted_opponent(name, slot, noise=False):
     label = f"{name}{slot}"

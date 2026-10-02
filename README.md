@@ -77,10 +77,13 @@ python train.py \
   -i Laptop ItexvsCypress IS_BT_Acquisition Grocery thompson Car EnergySmall_A \
   --model-type general \
   --general-domain EnergySmall_A \
+  --compatible-domains Coffee Camera Lunch SmartPhone Kitchen \
   --total-timesteps 300000
 ```
 
-`general`では観測shapeとaction headを`general_domain`から決めます。各対象ドメインはそのshape以内である必要があり、余白を0でpaddingします。`relative_time`は常に最後の要素です。対象ドメインに存在しないissue/valueはaction maskで選択できません。
+`general`では、学習ドメイン、`general_domain`、`compatible_domains`の和集合から、論点位置ごとの最大value数と最大観測長を計算します。未知ドメインはネットワーク形状の確保にだけ使われ、学習セッションには入りません。余白は0でpaddingし、`relative_time`は常に最後の要素です。対象ドメインに存在しないissue/valueはaction maskで選択できません。
+
+`--compatible-domains`を省略したgeneralモデルは、既定で`Coffee Camera Lunch SmartPhone Kitchen`のすべてに対応します。標準構成のaction spaceは`[7, 5, 5, 5, 5, 5, 2]`、観測長は181です。従来の`[5, 5, 5, 5, 5, 5, 2]` checkpointはネットワーク形状が異なるため、CoffeeとSmartPhoneへの対応には新しい設定での再学習が必要です。
 
 `--num-envs`は複数の独立セッションをround-robinで進めます。DSACの更新とpoolは共有されます。
 
@@ -140,11 +143,11 @@ CUDA_VISIBLE_DEVICES=0 ./run_command/train_general.sh
 # 各expertモデルを対応するドメイン・固定ペアで評価
 CUDA_VISIBLE_DEVICES=0 ./run_command/test_expert.sh
 
-# generalモデルを既知7＋未知3ドメイン x 10ペアで評価
+# generalモデルを既知7＋未知5ドメイン x 10ペアで評価
 CUDA_VISIBLE_DEVICES=0 ./run_command/test_general.sh
 ```
 
-generalの未知ドメインは`Camera`、`Lunch`、`Kitchen`です。これらは学習対象に含まれず、かつ学習済みcheckpointの6 issue・各最5 valueのaction space内に収まります。`Coffee`は7 value、`SmartPhone`は6 valueのissueを持つため、このcheckpointでは無効行動を区別して全valueを表現できず、評価対象外です。
+generalの未知ドメインは`Coffee`、`Camera`、`Lunch`、`SmartPhone`、`Kitchen`です。これらは学習対象に含めず、general checkpointの互換形状だけに反映します。Coffeeの第1論点は7値、SmartPhoneの第1論点は6値あるため、generalモデルの第1action headは7カテゴリで構築されます。
 
 既定値は`DEVICE=cuda`、`SEED=0`、評価は`EPISODES=100`、`STYLE=neutral`です。スクリプトを編集せず、環境変数で変更できます。`DRY_RUN=1`はコマンド表示のみ、`LIMIT=N`はexpertの先頭Nケースだけを実行します。
 
@@ -155,7 +158,7 @@ STYLE=conservative MODEL_PATH=/path/to/AlphaNego_Negotiator \
   ./run_command/test_general.sh
 ```
 
-評価完了後、`Results_MultiNego`の共通構造へcase単位で配置できます。既定の`case1`では、expert 70件とgeneral 100件がすべて101行（header＋100 episodes）であることを確認してからコピーします。
+評価完了後、`Results_MultiNego`の共通構造へcase単位で配置できます。既定の`case1`では、expert 70件とgeneral 120件がすべて101行（header＋100 episodes）であることを確認してからコピーします。
 
 ```bash
 ./run_command/export_case_results.sh

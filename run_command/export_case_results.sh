@@ -8,7 +8,7 @@ TARGET_ROOT="${TARGET_ROOT:-$PROJECT_DIR/../Results_MultiNego/results_α-Nego-ba
 CASE_NAME="${CASE_NAME:-case1}"
 EPISODES="${EPISODES:-100}"
 EXPECTED_EXPERT="${EXPECTED_EXPERT:-70}"
-EXPECTED_GENERAL="${EXPECTED_GENERAL:-100}"
+EXPECTED_GENERAL="${EXPECTED_GENERAL:-120}"
 
 declare -a expert_files=()
 declare -a general_files=()

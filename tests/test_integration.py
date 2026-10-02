@@ -4,20 +4,22 @@ from pathlib import Path
 import numpy as np
 import torch
 
-from compat import load_genius_domain
+from compat import KNOWN_DOMAINS, UNKNOWN_DOMAINS, load_genius_domain
+from dsac import DSAC
 from environment import NegotiationEnv
-from opponent_pool.pool import OpponentPool
+from opponent_pool.pool import OpponentPool, PoolEntry
 from results import FIELDS
-from test_negotiator import evaluate
+from test_negotiator import evaluate, validate_domains
 from train import layout, parse_args, train
 
 
 def test_domains_and_observation():
-    for name in ("Laptop", "ItexvsCypress", "IS_BT_Acquisition", "Grocery",
-                 "thompson", "Car", "EnergySmall_A"):
+    for name in (*KNOWN_DOMAINS, *UNKNOWN_DOMAINS):
         domain, utilities = load_genius_domain(name)
         assert domain and len(utilities) == 3
-    obs_dim, nvec = layout(["Laptop", "Car"], "EnergySmall_A", "general")
+    obs_dim, nvec = layout(["Laptop", "Car"], "EnergySmall_A", "general", UNKNOWN_DOMAINS)
+    assert obs_dim == 181
+    assert nvec == [7, 5, 5, 5, 5, 5, 2]
     env = NegotiationEnv("Laptop", ".", obs_dim, nvec)
     assert env.action_space.nvec.tolist() == [len(issue.values) for issue in env.domain] + [2]
     assert env.observation_space.shape == (obs_dim,)
@@ -28,6 +30,28 @@ def test_agent_pool_cli_normalization():
     args = parse_args(["-a", "boulware,conceder", "Linear", "BOULWARE"])
     assert args.agents == ["Boulware", "Conceder", "Linear"]
     assert args.allow_duplicate_opponents is True
+
+    general = parse_args(["--model-type", "general"])
+    assert general.compatible_domains == list(UNKNOWN_DOMAINS)
+
+
+def test_general_layout_runs_every_unknown_domain():
+    obs_dim, nvec = layout(KNOWN_DOMAINS, "EnergySmall_A", "general", UNKNOWN_DOMAINS)
+    model = DSAC(obs_dim, nvec, hidden=16, quantiles=8, buffer_size=1)
+    validate_domains(UNKNOWN_DOMAINS, model, {"model_type": "general", "issues": KNOWN_DOMAINS})
+    opponents = (PoolEntry("b0", "scripted", "Boulware"),
+                 PoolEntry("b1", "scripted", "Boulware"))
+    for name in UNKNOWN_DOMAINS:
+        env = NegotiationEnv(name, ".", obs_dim, nvec, test=True)
+        observation = env.reset(opponents)
+        done = False
+        while not done:
+            action = model.act(observation, env.current_mask(), deterministic=True)
+            observation, _, done, _ = env.step(action)
+
+    legacy = DSAC(obs_dim, [5, 5, 5, 5, 5, 5, 2], hidden=16, quantiles=8, buffer_size=1)
+    with np.testing.assert_raises_regex(ValueError, "Coffee.*Retrain"):
+        validate_domains(["Coffee"], legacy, {"model_type": "general", "issues": KNOWN_DOMAINS})
 
 
 def test_training_snapshot_resume_and_tsv(tmp_path):

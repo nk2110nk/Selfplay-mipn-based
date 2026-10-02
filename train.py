@@ -16,7 +16,7 @@ try:
 except ImportError:
     SummaryWriter = None
 
-from compat import SCRIPTED, load_genius_domain
+from compat import SCRIPTED, UNKNOWN_DOMAINS, load_genius_domain
 from dsac import DSAC
 from environment import NegotiationEnv
 from opponent_pool.evaluator import evaluate_pool
@@ -39,20 +39,24 @@ def seed_everything(seed):
         torch.cuda.manual_seed_all(seed)
 
 
-def layout(issues, general_domain, model_type):
-    target_name = general_domain if model_type == "general" else issues[0]
-    target = load_genius_domain(target_name)[0]
-    nvec = [len(issue.values) for issue in target] + [2]
-    obs_dim = sum(len(issue.values) for issue in target) * 6 + 1
-    for name in issues:
-        domain = load_genius_domain(name)[0]
-        if len(domain) > len(target):
-            raise ValueError(f"{name} has more issues than padding domain {target_name}")
-        if any(len(issue.values) > nvec[index] for index, issue in enumerate(domain)):
-            raise ValueError(f"{name} has an action head larger than padding domain {target_name}")
-        if sum(len(issue.values) for issue in domain) * 6 + 1 > obs_dim:
-            raise ValueError(f"{name} observation exceeds padding domain {target_name}")
-    return obs_dim, nvec
+def layout(issues, general_domain, model_type, compatible_domains=()):
+    """Build an expert layout or a per-head general-domain superset layout."""
+    if model_type == "expert":
+        domain = load_genius_domain(issues[0])[0]
+        counts = [len(issue.values) for issue in domain]
+        return sum(counts) * 6 + 1, counts + [2]
+
+    names = list(dict.fromkeys((general_domain, *issues, *compatible_domains)))
+    domains = [(name, load_genius_domain(name)[0]) for name in names]
+    issue_count = max(len(domain) for _, domain in domains)
+    value_limits = [1] * issue_count
+    max_observation_values = 0
+    for _, domain in domains:
+        counts = [len(issue.values) for issue in domain]
+        max_observation_values = max(max_observation_values, sum(counts))
+        for index, count in enumerate(counts):
+            value_limits[index] = max(value_limits[index], count)
+    return max_observation_values * 6 + 1, value_limits + [2]
 
 
 def build_model_dir(save_path, issues, agents, resume=None):
@@ -72,6 +76,7 @@ def save_checkpoint(model_dir, model, pool, config, global_step, episode, rng):
              "episode": episode, "obs_space_shape": [model.obs_dim],
              "action_nvec": list(model.nvec), "issues": config["issues"],
              "agents": config["agents"], "general_domain": config["general_domain"],
+             "compatible_domains": config.get("compatible_domains", []),
              "obs_layout": "padded_time_last", "pool_metadata": pool.to_dict(),
              "random_states": {"python": random.getstate(), "numpy": np.random.get_state(),
                                "torch": torch.get_rng_state(),
@@ -92,6 +97,7 @@ def snapshot(model_dir, model, config, step, metrics):
                 "dropout": model.dropout, "architecture_version": 2,
                 "obs_layout": "padded_time_last", "issues": config["issues"],
                 "general_domain": config["general_domain"], "model_type": config["model_type"],
+                "compatible_domains": config.get("compatible_domains", []),
                 "benchmark": metrics}, path)
     return path
 
@@ -131,6 +137,8 @@ def parse_args(argv=None):
     parser.add_argument("--device", choices=("auto", "cpu", "cuda"), default="auto")
     parser.add_argument("--model-type", choices=("expert", "general"), default="expert")
     parser.add_argument("--general-domain", "--general_domain", default="EnergySmall_A")
+    parser.add_argument("--compatible-domains", nargs="+", default=None,
+                        help="Evaluation-only domains included when sizing a general model")
     parser.add_argument("--style", choices=("neutral", "aggressive", "conservative"), default="neutral")
     parser.add_argument("--quantiles", type=int, default=64)
     parser.add_argument("--actor-lr", type=float, default=3e-5)
@@ -175,6 +183,10 @@ def parse_args(argv=None):
                         help="Show a terminal progress bar")
     args = parser.parse_args(argv)
     args.agents = normalize_agents(args.agents, parser)
+    if args.compatible_domains is None:
+        args.compatible_domains = list(UNKNOWN_DOMAINS) if args.model_type == "general" else []
+    elif args.model_type != "general":
+        parser.error("--compatible-domains is only valid for general models")
     if args.model_type == "expert" and len(args.issue) != 1:
         parser.error("Expert mode needs exactly one issue")
     if args.total_timesteps < 1 or args.num_envs < 1 or args.batch_size < 1 or args.quantiles < 2 or args.pool_eval_episodes < 1:
@@ -209,6 +221,9 @@ def train(args):
             current = args.issue if key == "issues" else getattr(args, key)
             if current != config[key]:
                 raise ValueError(f"Resume configuration differs for {key}: {current} != {config[key]}")
+        if "compatible_domains" in config and args.compatible_domains != config["compatible_domains"]:
+            raise ValueError("Resume configuration differs for compatible_domains: "
+                             f"{args.compatible_domains} != {config['compatible_domains']}")
         if config.get("agent_pool_from_cli", False) and set(args.agents) != set(config["agents"]):
             raise ValueError(f"Resume agent pool differs: {args.agents} != {config['agents']}")
     else:
@@ -218,7 +233,8 @@ def train(args):
         config["agent_pool_from_cli"] = True
         (model_dir / "config.json").write_text(json.dumps(config, indent=2), encoding="utf-8")
     seed_everything(config["seed"])
-    obs_dim, nvec = layout(config["issues"], config["general_domain"], config["model_type"])
+    obs_dim, nvec = layout(config["issues"], config["general_domain"], config["model_type"],
+                           config.get("compatible_domains", ()))
     model = DSAC(obs_dim, nvec, device=args.device, quantiles=config["quantiles"],
                  actor_lr=config["actor_lr"], critic_lr=config["critic_lr"],
                  batch_size=config["batch_size"], buffer_size=config["replay_buffer_size"],

@@ -22,6 +22,14 @@ AGENTS=(
   Atlas3
 )
 
+COMPATIBLE_DOMAINS=(
+  Coffee
+  Camera
+  Lunch
+  SmartPhone
+  Kitchen
+)
+
 PYTHON_BIN="${PYTHON_BIN:-python}"
 SAVE_ROOT="${SAVE_ROOT:-results}"
 TIMESTEPS="${TIMESTEPS:-300000}"
@@ -40,6 +48,7 @@ cmd=(
   -sp "$SAVE_ROOT"
   --model-type general
   --general-domain EnergySmall_A
+  --compatible-domains "${COMPATIBLE_DOMAINS[@]}"
   --total-timesteps "$TIMESTEPS"
   --num-envs "$N_ENVS"
   --device "$DEVICE"
@@ -51,7 +60,7 @@ cmd=(
   --allow-duplicate-opponents
 )
 
-echo "General training: ${#DOMAINS[@]} domains, ${#AGENTS[@]} scripted opponents, $TIMESTEPS steps"
+echo "General training: ${#DOMAINS[@]} training domains, ${#COMPATIBLE_DOMAINS[@]} unseen-compatible domains, ${#AGENTS[@]} scripted opponents, $TIMESTEPS steps"
 if [[ "$DRY_RUN" == "1" ]]; then
   printf '  %q' "${cmd[@]}"
   printf '\n'
