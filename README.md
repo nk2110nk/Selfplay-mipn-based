@@ -215,7 +215,7 @@ Sc = (1 - min(agreement_rate, 1 - epsilon))^(-utility)
 
 学習報酬は変更前と同じく合意時の自分のutilityだけです。相手のutilityとsocial welfareはactor観測、critic入力、学習報酬、PFSP、snapshot優位判定のいずれにも使用しません。ベンチマークの学習ログと評価TSVには事後評価用として記録しますが、意思決定には戻しません。
 
-pool上限時はscripted opponentを保持し、snapshotを次の順で削除します: negotiation scoreが低い、選択回数が少ない、追加stepが古い。判定は決定的です。
+pool上限時はscripted opponentを保持し、snapshotを次の順で削除します: PFSPと同じ定義で難易度が低い（学習エージェントにとって簡単）、選択回数が少ない、追加stepが古い。無効な難易度は最優先で削除し、最後にIDでtie-breakするため判定は決定的です。追加判定時のbenchmarkは新snapshot自身との対戦結果ではないため、そのsnapshotの難易度には流用しません。新snapshotは追加直後のpruningから一度保護し、実際の対戦またはpool評価から難易度を蓄積します。
 
 ## 出力
 

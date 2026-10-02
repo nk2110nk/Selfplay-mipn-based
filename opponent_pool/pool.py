@@ -9,7 +9,7 @@ from pathlib import Path
 
 import numpy as np
 
-from .pfsp import negotiation_score, pfsp_probabilities
+from .pfsp import dominance_probability, negotiation_score, pfsp_probabilities
 
 
 @dataclass
@@ -63,6 +63,14 @@ def is_dominant(current, incumbent, tolerance=0.01, min_agreement=0.0):
     if abs(difference) > tolerance:
         return difference > 0
     return current["negotiation_score"] > incumbent.snapshot_score
+
+
+def snapshot_pruning_key(entry):
+    """Rank disposable snapshots: invalid/easy, rarely selected, then old."""
+    difficulty = dominance_probability(entry)
+    if not np.isfinite(difficulty):
+        difficulty = float("-inf")
+    return difficulty, entry.selected, entry.added_step, entry.id
 
 
 class OpponentPool:
@@ -140,19 +148,22 @@ class OpponentPool:
     def add_snapshot(self, step, actor_path, metrics):
         entry = PoolEntry(f"snapshot-{step}", "snapshot", f"Snapshot{step}",
                           checkpoint_path=str(Path(actor_path).relative_to(self.root.parent)), added_step=step)
-        entry.record(metrics, step, length_weight=self.length_weight, welfare_weight=self.welfare_weight)
         entry.snapshot_agent_utility = metrics["agent_utility"]
         entry.snapshot_score = metrics["negotiation_score"]
         self.entries.append(entry)
-        return self.prune()
+        # Admission metrics describe the new policy against the existing pool,
+        # not the learner's performance against this new opponent snapshot.
+        return self.prune(protected_ids={entry.id})
 
-    def prune(self):
+    def prune(self, protected_ids=()):
         removed = []
+        protected_ids = set(protected_ids)
         while len(self.entries) > self.max_size:
             snapshots = [e for e in self.entries if e.kind == "snapshot"]
             if not snapshots:
                 raise ValueError("max_pool_size is smaller than scripted pool")
-            victim = min(snapshots, key=lambda e: (e.negotiation_score, e.selected, e.added_step, e.id))
+            candidates = [entry for entry in snapshots if entry.id not in protected_ids]
+            victim = min(candidates or snapshots, key=snapshot_pruning_key)
             self.entries.remove(victim)
             path = self.root.parent / victim.checkpoint_path
             if path.is_file():

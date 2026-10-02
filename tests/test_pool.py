@@ -3,7 +3,7 @@ import json
 import numpy as np
 
 from opponent_pool.pfsp import dominance_probability, negotiation_score, pfsp_probabilities
-from opponent_pool.pool import OpponentPool, PoolEntry, is_dominant
+from opponent_pool.pool import OpponentPool, PoolEntry, is_dominant, snapshot_pruning_key
 
 
 def metrics(value):
@@ -52,6 +52,54 @@ def test_pool_persistence_prune_and_dominance(tmp_path):
     assert removed == ["snapshot-1"] and not first_path.exists()
     assert second_path.exists()
     assert len(pool.entries) == 3
+
+
+def test_pruning_keeps_hard_snapshot_and_has_deterministic_tiebreaks():
+    hard = PoolEntry("hard", "snapshot", "Hard", added_step=20, selected=8)
+    easy = PoolEntry("easy", "snapshot", "Easy", added_step=10, selected=1)
+    hard.record({"agreement_rate": 0.2, "agent_utility": 0.1,
+                 "negotiation_length": 70}, 1)
+    easy.record({"agreement_rate": 0.9, "agent_utility": 0.9,
+                 "negotiation_length": 10}, 1)
+    assert snapshot_pruning_key(easy) < snapshot_pruning_key(hard)
+
+    tied_new = PoolEntry("new", "snapshot", "New", added_step=20, selected=1)
+    tied_old = PoolEntry("old", "snapshot", "Old", added_step=10, selected=1)
+    for entry in (tied_new, tied_old):
+        entry.record({"agreement_rate": 0.5, "agent_utility": 0.5,
+                      "negotiation_length": 40}, 1)
+    assert snapshot_pruning_key(tied_old) < snapshot_pruning_key(tied_new)
+
+
+def test_add_snapshot_prunes_easy_evaluated_opponent_and_protects_new(tmp_path):
+    root = tmp_path / "pool"
+    snapshots = root / "snapshots"
+    snapshots.mkdir(parents=True)
+    pool = OpponentPool(root, ["Boulware"], max_size=3)
+
+    hard_path = snapshots / "snapshot-1.pt"
+    easy_path = snapshots / "snapshot-2.pt"
+    new_path = snapshots / "snapshot-3.pt"
+    for path in (hard_path, easy_path, new_path):
+        path.write_bytes(path.name.encode())
+
+    pool.add_snapshot(1, hard_path, metrics(0.4))
+    hard = next(entry for entry in pool.entries if entry.id == "snapshot-1")
+    hard.record({"agreement_rate": 0.2, "agent_utility": 0.1,
+                 "negotiation_length": 70}, 10)
+    pool.add_snapshot(2, easy_path, metrics(0.8))
+    easy = next(entry for entry in pool.entries if entry.id == "snapshot-2")
+    easy.record({"agreement_rate": 0.9, "agent_utility": 0.9,
+                 "negotiation_length": 10}, 20)
+
+    removed = pool.add_snapshot(3, new_path, metrics(0.9))
+    assert removed == ["snapshot-2"]
+    assert hard_path.exists() and new_path.exists() and not easy_path.exists()
+    assert {entry.id for entry in pool.entries if entry.kind == "snapshot"} == {
+        "snapshot-1", "snapshot-3"
+    }
+    newest = next(entry for entry in pool.entries if entry.id == "snapshot-3")
+    assert newest.matches == 0
 
 
 def test_scripted_pair_space_includes_duplicates(tmp_path):
